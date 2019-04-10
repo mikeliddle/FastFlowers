@@ -38,15 +38,25 @@ ruleset Shop {
     }
   }
   
-  rule deliver_requested {
+  rule delivery_requested {
     select when shop delivery_requested
     pre {
       driver_id = event:attr("driver_id")
     }
     
+    if ent:auto_select then
+      event:send({
+        "eid": "none",
+        "domain": "shop",
+        "type": "driver_decision",
+        "attrs": {
+          "driver_id": driver_id
+        }
+      })
+
     fired {
       // check request
-      raise shop event "approved_rejected"
+      raise driver event ""
         attributes { "driver_id": driver_id } 
     }
   }
