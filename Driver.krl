@@ -31,7 +31,20 @@ ruleset Driver {
 
   rule gossip {
     select when gossip heartbeat
+    
+    pre {
+      order = random:integer(0,1) == 1
+    }
 
+    if order then
+      send_directive("Sending Order gossip")
+
+    fired {
+      raise gossip event "order_gossip"
+    }
+    else {
+      raise gossip event "delivery_gossip"
+    }
   }
 
   rule release_request {
