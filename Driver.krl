@@ -117,36 +117,51 @@ ruleset Driver {
       //  attributes event:attrs
     }
   }
-  
-  rule driver_gossip_started {
-    select when driver start_gossip
-    pre {
-      neighbor = chooseDriver()
-      updated_attrs = event:attrs.put(["driver"], neighbor);
-      gossip_type = random:integer(1)
-    }
-
-    if gossip_type == 0 then
-      send_directive("Sending Order gossip")
-
-    fired {
-      raise driver event "send_order"
-        attributes updated_attrs
-    }
-    else {
-      raise driver event "send_seen_orders"
-        attributes updated_attrs
-    }
-  }
-  
-  rule send_order_gossip {
-    select when driver send_order
     
+  rule send_order_gossip {
+    select when driver send_order where ent:status.defaultsTo(true)
+    pre {
+      current_peer = getPeer()
+      peer_entity = ent:peers{current_peer{"id"}}.defaultsTo({})  // TODO: Art ask Mike about "id" and how it's set.
+      order = getOrder(current_peer)
+      peer_subscription = subscriptions:established("Tx_role", "peer").filter(function(x) {
+        x{"Tx"}.klog("tx") == current_peer{"id"}.klog("peerId")
+      })[0].klog("subscription")
+    }
+    
+    every{
+      send_directive("peer", peer_subscription);
+      event:send({
+        "eci": peer_subscription{"Tx"},
+        "eid": "none",
+        "domain": "driver",
+        "type": "handle_order",
+        "attrs": order
+      });
+    }
   }
   
   rule handle_order_gossip {
-    select when driver handle_seen_orders
+    select when driver handle_order where ent:status.defaultsTo(true)
     
+    pre {
+      order_id = event:attr("OrderId")
+      id_array = ids.split(re#:#)
+      store_id = id_array[0]
+      order_num = math:int(id_array[1])
+      order = event:attr("Order")
+
+      origin_group = getOrders().get(origin_id).defaultsTo({})
+      updated_orders = origin_group.put(order_num, order)
+    }
+    
+    if origin_group != {} && order_num - 1 != math:int(ent:seen{store_id}) then
+      send_directive("Not adding Order", {"ids": ids})
+ 
+    notfired {
+      ent:orders := getOrders().set(store_id, updated_orders);
+      ent:seen{store_id} := order_num;
+    }
   }
   
   rule send_seen_gossip {
@@ -159,8 +174,8 @@ ruleset Driver {
       event:send( { 
         "eci": peer_subscription{"Tx"}, 
         "eid": "send-seen-order",
-        "domain": "gossip", 
-        "type": "seen_received",
+        "domain": "driver", 
+        "type": "handle_seen_orders",
         "attrs": my_seen } )
     }
   }
