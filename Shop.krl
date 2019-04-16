@@ -10,7 +10,7 @@ ruleset Shop {
         { "name": "__testing" } 
       ],
       "events": [ 
-        { "domain": "shop", "type": "order_ready"}
+        { "domain": "shop", "type": "order_received"}
         //{ "domain": "mischief", "type": "hat_lifted"} 
       ] }
     
@@ -45,6 +45,17 @@ ruleset Shop {
     notify = function() {
       // not sure if we want this or just need Shop_status ruleset
     }
+    
+    generateOrder = function( storeId, timestamp  ) {
+      order_id = storeId + ":" + order_count().as("String");
+      order = {
+        "OrderId": order_id,
+        "ShopId": storeId,
+        "Timestamp": timestamp,
+        "Status" : "ready"
+      };
+      order
+    }
   }
   
   rule delivery_requested {
@@ -78,29 +89,33 @@ ruleset Shop {
     // send to driver
   }
   
+  rule order_received {
+    select when shop order_received
+    pre {
+      store_id = meta:picoId;
+      current_time = time:now();
+      order = generateOrder(store_id, current_time);
+      updated_attrs = event:attrs.put(["order"],order)
+    }
+    always {
+      ent:order_num := order_count() + 1;
+      ent:reports := orders().put([order{"order_id"}], order);
+      raise shop event "order_ready"
+        attributes updated_attrs;
+    }
+  }
+  
   rule order_ready {
     select when shop order_ready
     // Choose 1 (or multiple?) driver(s) from a pool of known drivers to send order to.
     foreach Subscriptions:established("Tx_role", "driver") setting (driver)
     pre {
-      store_id = meta:picoId;
-      order_id = store_id + ":" + order_count().as("String");
-      status = "ready";
-      order_status = {};
-      order_status{"Status"} = status;
-      order_obj = {};
-      order_obj{order_id} = order_status.klog("Order Obj: ");
-      order = order_obj.klog("ORDER: ")
+      order = event:attr("order");
     }
     event:send(
           { "eci": driver["Tx"], "eid": "order-ready",
             "domain": "driver", "type": "order_ready",
             "attrs": { "order": order }})
-    fired {
-      ent:order_num := order_count() + 1 on final; // "on final" on reacts to last iteration of foreach.
-      ent:reports := orders().put(order_id, order) on final;
-    }
-    
   }
   
   rule order_available {
