@@ -27,9 +27,13 @@ ruleset Driver {
 
       http:post(base_url, form=body);
     }
-    
+
     getOrderStatus = function() {
       1 // pick_up, enroute, completed
+    }
+
+    get_random_order = function() {
+      
     }
   }
   
@@ -56,21 +60,69 @@ ruleset Driver {
             "attrs": { "driver_id": meta:picoId, "order_id": order_id,"status": status }})
   }
 
+  rule ready_for_delivery {
+    select when gossip heartbeat where length(ent:requested.keys()) == 0
+
+    pre {
+      order = get_random_order()
+      ids = event:attr("id")
+      id_array = ids.split(re#:#)
+      shop_id = id_array[0]
+      order_id = id_array[1]
+      order = event:attr("order")
+      shop_host = order{"shop_host"}
+    }
+
+    fired {
+      ent:requested := ent:requested.defaultsTo({}).put(ids, order);
+      raise wrangler event "subscription" attributes {
+        "name": shop_id,
+        "Rx_role": "driver",
+        "Tx_role": "shop",
+        "Tx_host": shop_host,
+        "channel_type": "subscription",
+        "wellKnown_Tx": shop_id
+      };
+    }
+  }
+
   rule release_request {
     select when driver rejected
+
+    pre {
+      order_id = event:attr("order_id")
+    }
 
     send_directive("releasing request")
 
     fired {
-      // remove order from requested list.
+      ent:requested := ent:requested.delete(order_id)
+    }
+  }
+
+  rule driver_approved {
+    select when driver approved
+
+    pre {
+      delivery = event:attr("order")
+      id = delivery{"id"}
+      
+    }
+
+    send_directive("new delivery")
+
+    fired {
+      ent:deliveries := ent:deliveries.defaultsTo({}).put(id, delivery);
+      raise driver event "delivery_created" attributes event:attrs;
     }
   }
 
   rule get_directions {
-    select when driver approved
+    select when driver delivery_created
 
     pre { 
-      location = event:attr("location")
+      order = event:attr("order")
+      location = order{"location"}
     }
 
     if location then
@@ -78,6 +130,56 @@ ruleset Driver {
         getDirections(location);
         send_directive("directions", directions);
       }
+  }
+
+  rule scheduling_update {
+    select when driver delivery_created
+
+    pre {
+      order = event:attr("order")
+    }
+
+    send_directive("scheduling status updates")
+
+    fired {
+      schedule driver event "status_updated" at time:add(time:now(), {"seconds": "5"})
+        attributes {
+          "status": "driver assigned",
+          "order_id": order{"id"}
+        }
+    }
+  }
+
+  rule send_update {
+    select when driver status_updated
+
+    pre {
+      new_status = ent:status.defaultsTo("picking up flowers")
+      order_id = event:attr("order_id")
+      store_subscription = subscriptions:established("Tx_role", "store").filter(function(x) {
+        x{"Tx"}.klog("tx") == current_store{"id"}.klog("storeId")
+      })[0].klog("subscription")
+      completed = new_status == "completed"
+    }
+
+    if completed then
+      every {
+        send_directive("delivery complete!");
+        event:send({
+          "eci": store_subscription{"Tx"},
+          "eid": "none",
+          "domain": "gossip",
+          "type": "seen",
+          "attrs": my_seen
+        });
+      }
+
+    notfired {
+      schedule driver event "status_updated" at time:add(time:now(), {"seconds": "5"})
+        attributes {
+          "status": new_status
+        };
+    }
   }
 
   rule new_peer {
