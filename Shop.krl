@@ -26,25 +26,25 @@ ruleset Shop {
       ent:drivers.defaultsTo([])
     }
     
-    orders = function() {
-      ent:reports.defaultsTo({})
+    orders = function() { // contain {order_id :  { order_id, status, driver_id, direction } }
+      ent:orders.defaultsTo({})
     }
     
     getStatus = function(id) {
-      
+      ent:orders[id]["status"]
     }
     
     getOrder = function(id) {
-      
+      ent:orders.get(id)
     }
     
-    collect = function(driver) {
+    // collect = function(driver) {
       
-    }
+    // }
     
-    notify = function() {
-      // not sure if we want this or just need Shop_status ruleset
-    }
+    // notify = function() {
+    //   // not sure if we want this or just need Shop_status ruleset
+    // }
     
     generateOrder = function( storeId, timestamp ) {
       order_id = storeId + ":" + order_count().as("String");
@@ -61,13 +61,16 @@ ruleset Shop {
   rule delivery_requested {
     select when shop delivery_requested
     pre {
+      order_id = event:attr("order_id")
       driver_id = event:attr("driver_id")
       store_id = meta:picoId;
       current_time = time:now();
+      
+    // TODO: generateOrder || getOrder
       order = generateOrder(store_id, current_time);
+      // order = getOrder(order_id)
       updated_attrs = event:attrs.put(["order"],order)
     }
-    
     // if ent:auto_select then
     //   event:send({
     //     "eid": "none",
@@ -80,8 +83,8 @@ ruleset Shop {
       
     always {
       ent:order_num := order_count() + 1;
-      ent:reports := orders().put([order{"order_id"}], order);
-      raise shop event "order_ready"
+      ent:orders := orders().put([order{"order_id"}], order);
+      raise shop event "driver_decision"
         attributes updated_attrs;
     }
     // fired {
@@ -94,24 +97,36 @@ ruleset Shop {
   rule delivery_check {
     select when shop driver_decision
     pre {
-      attrs = event:attr("updated_attrs")
+      order = event:attr("order")
       driver_id = event:attr("driver_id")
+    }
+    // TODO: for approve/reject 
+    fired {
+      event:send(
+          { "eci": driver_id, "eid": "approved",
+            "domain": "driver", "type": "approved",
+            "attrs": {  }})
+    } else {
+      event:send(
+          { "eci": driver_id, "eid": "rejected",
+            "domain": "driver", "type": "rejected",
+            "attrs": {   }})
     }
   }
   
   rule order_available {
     select when shop order_available
-    // Choose 1 driver from a pool of known drivers to send order to.
     pre {
+    // Choose 1 driver from a pool of known drivers to send order to.
       subs = Subscriptions:established("Tx_role", "driver")
-      randNum = random:integer(subs.length())
+      randNum = random:integer(subs.length()) 
       driver = subs[randNum]
-      order = event:attr("order");
+      orders = orders();
     }
     event:send(
           { "eci": driver["Tx"], "eid": "order_available",
             "domain": "driver", "type": "order_available",
-            "attrs": { "order": order, "Rx": driver["Rx"]  }})
+            "attrs": { "orders": orders, "Rx": driver["Rx"]  }})
   }
   
   rule status_updated {
@@ -122,7 +137,9 @@ ruleset Shop {
       order_id = event:attr("order_id")
       status = event:attr("status")
     }
-    // update order
-    // pick_up, enroute, completed
+    // update order: pick_up, enroute, completed
+    
+    // if status = "completed" then
+    //   sendSMS & remove from order
   }
 }
