@@ -226,7 +226,11 @@ ruleset Driver {
     send_directive("received seen", new_seen);
     
     always {
+<<<<<<< HEAD
       ent:peers{[gossiper_name, "orders"]} := new_seen
+=======
+      ent:peers{[their_name, "orders"]} := new_seen
+>>>>>>> added helper rules
     }
   }
 
@@ -417,6 +421,34 @@ ruleset Driver {
         "id": new_id,
         "orders": {}
       });
+    }
+  }
+
+  rule driver_did_something {
+    select when driver changed
+    
+    pre {
+      new_status = event:attr("status")
+    }
+
+    send_directive(new_status)
+
+    always {
+      ent:order_status := new_status
+    }
+  }
+
+  rule location_changed {
+    select when driver location_changed
+
+    pre {
+      location = event:attr("location")
+    }
+
+    send_directive("changing location")
+
+    always {
+      ent:location := location
     }
   }
 
