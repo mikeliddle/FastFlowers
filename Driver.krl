@@ -43,7 +43,7 @@ ruleset Driver {
       raise gossip event "order_gossip"
     }
     else {
-      raise gossip event "delivery_gossip"
+      raise gossip event "seen_gossip"
     }
   }
 
@@ -54,6 +54,23 @@ ruleset Driver {
 
     fired {
       // remove order from requested list.
+    }
+  }
+
+  rule driver_approved {
+    select when driver approved
+
+    pre {
+      delivery = event:attr("delivery")
+      id = delivery{"id"}
+      
+    }
+
+    send_directive("new delivery")
+
+    fired {
+      ent:deliveries := ent:deliveries.defaultsTo({}).put(id, delivery);
+      raise driver event "delivery_created" attributes event:attrs
     }
   }
 
@@ -78,6 +95,7 @@ ruleset Driver {
       peer_id = event:attr("eci")
       peer_name = event:attr("sensor_name")
       host = event:attr("host")
+      tx = event:attr("tx")
     }
 
     send_directive("received a new peer!")
@@ -90,8 +108,8 @@ ruleset Driver {
 
       raise wrangler event "subscription" attributes {
         "name": peer_id,
-        "Rx_role": "peer",
-        "Tx_role": "peer",
+        "Rx_role": "driver",
+        "Tx_role": tx,
         "Tx_host": host,
         "channel_type": "subscription",
         "wellKnown_Tx": peer_id
@@ -105,15 +123,17 @@ ruleset Driver {
     pre {
       peer_id = event:attr("name").klog("name")
       new_id = event:attr("Tx").klog("tx")
+      role = event:attr("Tx_role").defaultsTo(False) == "driver"
     }
 
-    send_directive("updating peer")
+    if role then
+      send_directive("updating peer")
 
     fired {
       ent:peers := ent:peers.delete(peer_id);
       ent:peers := ent:peers.defaultsTo({}).set(new_id, {
         "id": new_id,
-        "messages": {}
+        "orders": {}
       });
     }
   }
@@ -121,7 +141,7 @@ ruleset Driver {
   rule schedule_gossip {
     select when system online or wrangler ruleset_added or gossip heartbeat
 
-    if ent:status.defaultsTo(true)
+    if ent:status.defaultsTo(true) then
       send_directive("Scheduled Heartbeat!")
 
     fired {
