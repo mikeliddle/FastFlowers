@@ -2,7 +2,6 @@ ruleset Driver {
   meta {
     use module io.picolabs.subscription alias subscriptions
     use module io.picolabs.keys alias google
-
     shares __testing, getOrders, getPeers, getSeen
   }
   global {
