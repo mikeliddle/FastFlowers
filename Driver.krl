@@ -112,9 +112,8 @@ ruleset Driver {
         "Status" : order_status,
         "Timestamp" : timestamp
       });
-      ent:seen_orders{store_id} := order_id
-      //raise driver event "start_gossip"
-      //  attributes event:attrs
+      ent:seen_orders{store_id} := order_id;
+      raise driver event "gossip_heartbeat"
     }
   }
     
@@ -379,25 +378,25 @@ ruleset Driver {
   }
   
   rule gossip {
-    select when gossip heartbeat
+    select when driver gossip_heartbeat
     
     pre {
       order = random:integer(0,1) == 1
     }
 
     if order then
-      send_directive("Sending Order gossip")
+      send_directive("Sending Gossip")
 
     fired {
-      raise gossip event "order_gossip"
+      raise driver event "send_order"
     }
     else {
-      raise gossip event "delivery_gossip"
+      raise driver event "send_seen_orders"
     }
   }
 
   rule schedule_gossip {
-    select when system online or wrangler ruleset_added or gossip heartbeat
+    select when system online or wrangler ruleset_added or driver gossip_heartbeat
 
     if ent:status.defaultsTo(true) then
       send_directive("Scheduled Heartbeat!")
