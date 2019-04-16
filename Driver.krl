@@ -32,14 +32,60 @@ ruleset Driver {
       1 // pick_up, enroute, completed
     }
     
-    orders = function() {
+    getOrders = function() {
       ent:orders => ent:orders | {}
     }
     
-    // seenOrders = function() {
-    //   ent:seen_orders => ent:seen_orders | {}
-    // }
+    getSeen = function() {
+      ent:seen_orders => ent:seen_orders | {}
+    }
     
+    getPeer = function() {
+      available_peers = ent:peers.defaultsTo({}).filter(function(peer_value,peer_id) {
+        adjusted_orders = ent:orders.defaultsTo({}).filter(function(origin_group, origin_id) {
+          order_id = ent:peers{[peer_id,"orders",origin_id]}.klog("order_id");
+          
+          origin_group.keys().any(function(x) {x > order_id}).klog("origin_groups");
+        });
+        
+        length(adjusted_orders) != 0;
+      });
+      
+      peer_count = length(available_peers.keys()) - 1;
+      rand_index = random:integer(0,peer_count).klog("rand_index");
+      
+      peer_index = available_peers.keys()[rand_index].klog("peer_index");
+      
+      available_peers{peer_index}.klog("driver");
+    }
+
+    getAnyPeer = function() {
+      peer_count = length(subscriptions:established("Tx_role", "driver")) - 1;
+      rand_index = random:integer(peer_count).klog("peer_index");
+      subscriptions:established("Tx_role", "driver").klog("drivers")[rand_index].klog("driver");
+    }
+
+    getOrder = function(driver) {
+      available_groups = ent:orders.defaultsTo({}).klog("orders").filter(function(origin_group, origin_id) {
+        current_order_id = driver{["orders", origin_id]}.defaultsTo(false);
+        orders = origin_group.keys().klog("order_keys");
+        last_order = orders[length(orders) - 1];
+      
+        test = current_order_id => (current_order_id < last_order) | true;
+        test
+      });
+      rand_index = random:integer(0,length(available_groups.keys()) - 1).klog("rand_index");
+      group_index = available_groups.keys()[rand_index].klog("group_index");
+      
+      order_index = peer{["orders", group_index]};
+      order_index = order_index => (math:int(order_index) + 1).as("String") | "1";
+      
+      {
+        "OrderId": group_index + ":" + order_index,
+        "Order": ent:orders{[group_index, order_index.klog("OrderId")]}.klog("returns")
+      }
+    }
+
     updateOrders = function(order) {
       update = orders().put([order{"StoreId"},order{"OrderId"}], order);
       update
@@ -57,7 +103,6 @@ ruleset Driver {
     getOrdersSummary = function() {
       // summary = s
     }
-    
   }
 
   rule order_made_available {
@@ -110,10 +155,10 @@ ruleset Driver {
     pre {
       peer_eci = event:attr("driver").klog("Send Seen to: ");
       summary = getOrdersSummary();
-      updated_attrs = event:attrs.put(["seen_messages"], summary).klog("Send_seen UPDATED ATTRS: ");
+      updated_attrs = event:attrs.put(["seen_orders"], summary).klog("Send_seen UPDATED ATTRS: ");
       
     }
-    event:send( { "eci": peer_eci, "eid": "send-seen-message",
+    event:send( { "eci": peer_eci, "eid": "send-seen-order",
                   "domain": "gossip", "type": "seen_received",
                   "attrs": updated_attrs } )
     fired {
@@ -186,7 +231,7 @@ ruleset Driver {
     always {
       ent:peers := ent:peers.defaultsTo({}).put(peer_id, {
         "id": peer_id,
-        "messages": {}
+        "orders": {}
       });
 
       raise wrangler event "subscription" attributes {
@@ -214,7 +259,7 @@ ruleset Driver {
       ent:peers := ent:peers.delete(peer_id);
       ent:peers := ent:peers.defaultsTo({}).set(new_id, {
         "id": new_id,
-        "messages": {}
+        "orders": {}
       });
     }
   }
