@@ -1,7 +1,7 @@
 ruleset Driver {
   meta {
     use module io.picolabs.subscription alias subscriptions
-    use module io.picolabs.keys
+    use module io.picolabs.keys alias google
     shares __testing, getOrders, getPeers, getSeen
   }
   global {
@@ -230,7 +230,7 @@ ruleset Driver {
   }
 
   rule ready_for_delivery {
-    select when gossip heartbeat where length(ent:requested.keys()) == 0
+    select when driver gossip_heartbeat where length(ent:requested.keys()) == 0
 
     pre {
       order = get_random_order()
@@ -361,7 +361,10 @@ ruleset Driver {
         });
       }
 
-    notfired {
+    fired {
+      ent:order_status := new_status
+    }
+    else {
       schedule driver event "status_updated" at time:add(time:now(), {"seconds": "5"})
         attributes {
           "status": new_status
