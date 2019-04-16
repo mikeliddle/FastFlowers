@@ -2,7 +2,7 @@ ruleset Driver {
   meta {
     use module io.picolabs.subscription alias subscriptions
     use module io.picolabs.keys
-    shares __testing
+    shares __testing, orders
   }
   global {
     __testing = { "queries":
@@ -27,24 +27,98 @@ ruleset Driver {
 
       http:post(base_url, form=body);
     }
+    
+    orders = function() {
+      ent:orders => ent:orders | {}
+    }
+    
+    // seenOrders = function() {
+    //   ent:seen_orders => ent:seen_orders | {}
+    // }
+    
+    updateOrders = function(order) {
+      update = orders().put([order{"StoreId"},order{"OrderId"}], order);
+      update
+    }
+    
+    chooseDriver = function() {
+      neighbors = subscriptions:established("Tx_role", "driver");
+      neighbors_eci = neighbors.map(function(v,k) {
+        peer_eci = v{"Tx"}.klog("Peer's ECI: ");
+        peer_eci
+      });
+      neighbors_eci[random:integer(neighbors.length()-1)]
+    }
+    
+    getOrdersSummary = function() {
+      // summary = s
+    }
+    
   }
 
-  rule gossip {
-    select when gossip heartbeat
-    
+  rule order_made_available {
+    select when driver order_available
     pre {
-      order = random:integer(0,1) == 1
+      order = event:attr("order");
+      new_orders = updateOrders(order);
+    }
+    send_directive("Updating Drivers Orders")
+    always {
+      ent:orders := new_orders;
+      raise driver event "start_gossip"
+        attributes event:attrs
+    }
+  }
+  
+  rule driver_gossip_started {
+    select when driver start_gossip
+    pre {
+      neighbor = chooseDriver()
+      updated_attrs = event:attrs.put(["driver"], neighbor);
+      gossip_type = random:integer(1)
     }
 
-    if order then
+    if gossip_type == 0 then
       send_directive("Sending Order gossip")
 
     fired {
-      raise gossip event "order_gossip"
+      raise driver event "send_order"
+        attributes updated_attrs
     }
     else {
-      raise gossip event "delivery_gossip"
+      raise driver event "send_seen_orders"
+        attributes updated_attrs
     }
+  }
+  
+  rule send_order_gossip {
+    select when driver send_order
+    
+  }
+  
+  rule handle_order_gossip {
+    select when driver handle_seen_orders
+    
+  }
+  
+  rule send_seen_gossip {
+    select when driver send_seen_orders
+    pre {
+      peer_eci = event:attr("driver").klog("Send Seen to: ");
+      summary = getOrdersSummary();
+      updated_attrs = event:attrs.put(["seen_messages"], summary).klog("Send_seen UPDATED ATTRS: ");
+      
+    }
+    event:send( { "eci": peer_eci, "eid": "send-seen-message",
+                  "domain": "gossip", "type": "seen_received",
+                  "attrs": updated_attrs } )
+    fired {
+      // raise gossip event "schedule_heartbeat"
+    }
+  }
+  
+  rule handle_seen_gossip {
+    select when driver handle_seen_orders
   }
 
   rule release_request {
@@ -121,11 +195,11 @@ ruleset Driver {
   rule schedule_gossip {
     select when system online or wrangler ruleset_added or gossip heartbeat
 
-    if ent:status.defaultsTo(true)
+    if ent:status.defaultsTo(true) then
       send_directive("Scheduled Heartbeat!")
 
     fired {
-      schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
+      //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
   }
 
