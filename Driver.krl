@@ -28,6 +28,7 @@ ruleset Driver {
       http:post(base_url, form=body);
     }
     
+<<<<<<< HEAD
     orders = function() {
       ent:orders => ent:orders | {}
     }
@@ -119,6 +120,34 @@ ruleset Driver {
   
   rule handle_seen_gossip {
     select when driver handle_seen_orders
+=======
+    getOrderStatus = function() {
+      1 // pick_up, enroute, completed
+    }
+  }
+  
+  rule order_available {
+    select when driver order_available
+    pre {
+      order = event:attr("order")
+      shop_Rx = event:attr("Rx")
+    }
+    
+  }
+  
+  rule order_status_update {
+    select when driver status_update
+    pre {
+      order = "something"
+      order_id = order["order_id"]
+      shop_id = order["ship_id"] // from order
+      status = getOrderStatus()
+    }
+    event:send(
+          { "eci": shop_id, "eid": "status_update",
+            "domain": "shop", "type": "status_update",
+            "attrs": { "driver_id": meta:picoId, "order_id": order_id,"status": status }})
+>>>>>>> master
   }
 
   rule release_request {
@@ -146,7 +175,7 @@ ruleset Driver {
   }
 
   rule new_peer {
-    select when sensor new_peer
+    select when driver new_peer
 
     pre {
       peer_id = event:attr("eci")
@@ -191,13 +220,31 @@ ruleset Driver {
       });
     }
   }
+  
+  rule gossip {
+    select when gossip heartbeat
+    
+    pre {
+      order = random:integer(0,1) == 1
+    }
+
+    if order then
+      send_directive("Sending Order gossip")
+
+    fired {
+      raise gossip event "order_gossip"
+    }
+    else {
+      raise gossip event "delivery_gossip"
+    }
+  }
 
   rule schedule_gossip {
     select when system online or wrangler ruleset_added or gossip heartbeat
 
     if ent:status.defaultsTo(true) then
       send_directive("Scheduled Heartbeat!")
-
+      
     fired {
       //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
