@@ -10,7 +10,7 @@ ruleset Shop {
         { "name": "__testing" } 
       ],
       "events": [ 
-        { "domain": "shop", "type": "order_received"}
+        { "domain": "shop", "type": "order_available"}
         //{ "domain": "mischief", "type": "hat_lifted"} 
       ] }
     
@@ -26,6 +26,7 @@ ruleset Shop {
       ent:drivers.defaultsTo([])
     }
     
+    // Shouldn't orders contain {order_id :  { order_id, store_id, status, timestamp, driver_id, direction } }
     orders = function() { // contain {order_id :  { order_id, status, driver_id, direction } }
       ent:orders.defaultsTo({})
     }
@@ -52,7 +53,9 @@ ruleset Shop {
         "OrderId": order_id,
         "ShopId": storeId,
         "Timestamp": timestamp,
-        "Status" : "ready"
+        "Status" : "ready",
+        "DriverId" : "",
+        "Direction" : ""
       };
       order
     }
@@ -118,15 +121,19 @@ ruleset Shop {
     select when shop order_available
     pre {
     // Choose 1 driver from a pool of known drivers to send order to.
-      subs = Subscriptions:established("Tx_role", "driver")
-      randNum = random:integer(subs.length()) 
-      driver = subs[randNum]
-      orders = orders();
+      subs = Subscriptions:established("Tx_role", "driver").klog("Subs: ")
+      randNum = random:integer(subs.length()-1).klog("RAND NUM: ")
+      driver = subs[randNum].klog("DRIVER: ")
+      order = generateOrder(meta:picoId, time:now());
     }
     event:send(
-          { "eci": driver["Tx"], "eid": "order_available",
+          { "eci": driver{"Tx"}, "eid": "order_available",
             "domain": "driver", "type": "order_available",
-            "attrs": { "orders": orders, "Rx": driver["Rx"]  }})
+            "attrs": { "order": order, "Rx": driver{"Rx"}  }})
+    always{
+      ent:orders := orders().put([order{"OrderId"}], order);
+      ent:order_num := order_count() + 1
+    }
   }
   
   rule status_updated {
