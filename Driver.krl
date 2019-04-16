@@ -43,45 +43,7 @@ ruleset Driver {
       raise gossip event "order_gossip"
     }
     else {
-      raise gossip event "delivery_gossip"
-    }
-  }
-
-  rule delivery_gossip_requested {
-    select when gossip delivery_gossip
-
-    pre {
-      seen = random:integer(0,1) == 1
-    }
-
-    if seen then
-      send_directive("delivery seen message")
-
-    fired {
-      raise gossip event "delivery_seen"
-    }
-    else {
-      raise gossip event "delivery_message"
-    }
-  }
-
-    rule send_delivery_seen {
-    select when gossip delivery_seen where ent:process.defaultsTo(true)
-
-    pre {
-      peer_subscription = getAnyPeer()
-      my_delivery_seen = ent:seen.defaultsTo({})
-    }
-
-    every {
-      send_directive("seen", my_delivery_seen);
-      event:send({
-          "eci": peer_subscription{"Tx"},
-          "eid": "none",
-          "domain": "gossip",
-          "type": "new_delivery_seen",
-          "attrs": my_delivery_seen
-        });
+      raise gossip event "seen_gossip"
     }
   }
 
@@ -161,15 +123,17 @@ ruleset Driver {
     pre {
       peer_id = event:attr("name").klog("name")
       new_id = event:attr("Tx").klog("tx")
+      role = event:attr("Tx_role").defaultsTo(False) == "driver"
     }
 
-    send_directive("updating peer")
+    if role then
+      send_directive("updating peer")
 
     fired {
       ent:peers := ent:peers.delete(peer_id);
       ent:peers := ent:peers.defaultsTo({}).set(new_id, {
         "id": new_id,
-        "messages": {}
+        "orders": {}
       });
     }
   }
