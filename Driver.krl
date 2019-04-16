@@ -27,8 +27,11 @@ ruleset Driver {
 
       http:post(base_url, form=body);
     }
+
+    getOrderStatus = function() {
+      1 // pick_up, enroute, completed
+    }
     
-<<<<<<< HEAD
     orders = function() {
       ent:orders => ent:orders | {}
     }
@@ -120,10 +123,6 @@ ruleset Driver {
   
   rule handle_seen_gossip {
     select when driver handle_seen_orders
-=======
-    getOrderStatus = function() {
-      1 // pick_up, enroute, completed
-    }
   }
   
   rule order_available {
@@ -147,7 +146,6 @@ ruleset Driver {
           { "eci": shop_id, "eid": "status_update",
             "domain": "shop", "type": "status_update",
             "attrs": { "driver_id": meta:picoId, "order_id": order_id,"status": status }})
->>>>>>> master
   }
 
   rule release_request {
