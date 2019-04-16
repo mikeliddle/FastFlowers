@@ -47,6 +47,44 @@ ruleset Driver {
     }
   }
 
+  rule delivery_gossip_requested {
+    select when gossip delivery_gossip
+
+    pre {
+      seen = random:integer(0,1) == 1
+    }
+
+    if seen then
+      send_directive("delivery seen message")
+
+    fired {
+      raise gossip event "delivery_seen"
+    }
+    else {
+      raise gossip event "delivery_message"
+    }
+  }
+
+    rule send_delivery_seen {
+    select when gossip delivery_seen where ent:process.defaultsTo(true)
+
+    pre {
+      peer_subscription = getAnyPeer()
+      my_delivery_seen = ent:seen.defaultsTo({})
+    }
+
+    every {
+      send_directive("seen", my_delivery_seen);
+      event:send({
+          "eci": peer_subscription{"Tx"},
+          "eid": "none",
+          "domain": "gossip",
+          "type": "new_delivery_seen",
+          "attrs": my_delivery_seen
+        });
+    }
+  }
+
   rule release_request {
     select when driver rejected
 
@@ -54,6 +92,23 @@ ruleset Driver {
 
     fired {
       // remove order from requested list.
+    }
+  }
+
+  rule driver_approved {
+    select when driver approved
+
+    pre {
+      delivery = event:attr("delivery")
+      id = delivery{"id"}
+      
+    }
+
+    send_directive("new delivery")
+
+    fired {
+      ent:deliveries := ent:deliveries.defaultsTo({}).put(id, delivery);
+      raise driver event "delivery_created" attributes event:attrs
     }
   }
 
@@ -78,6 +133,7 @@ ruleset Driver {
       peer_id = event:attr("eci")
       peer_name = event:attr("sensor_name")
       host = event:attr("host")
+      tx = event:attr("tx")
     }
 
     send_directive("received a new peer!")
@@ -90,8 +146,8 @@ ruleset Driver {
 
       raise wrangler event "subscription" attributes {
         "name": peer_id,
-        "Rx_role": "peer",
-        "Tx_role": "peer",
+        "Rx_role": "driver",
+        "Tx_role": tx,
         "Tx_host": host,
         "channel_type": "subscription",
         "wellKnown_Tx": peer_id
@@ -121,7 +177,7 @@ ruleset Driver {
   rule schedule_gossip {
     select when system online or wrangler ruleset_added or gossip heartbeat
 
-    if ent:status.defaultsTo(true)
+    if ent:status.defaultsTo(true) then
       send_directive("Scheduled Heartbeat!")
 
     fired {
