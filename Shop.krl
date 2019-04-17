@@ -2,12 +2,13 @@ ruleset Shop {
   meta {
     use module io.picolabs.wrangler alias wrangler
     use module io.picolabs.subscription alias Subscriptions
-    shares __testing
+    shares __testing, orders
   }
   global {
     __testing = { 
       "queries": [ 
-        { "name": "__testing" } 
+        { "name": "__testing" },
+        { "name": "orders" }
       ],
       "events": [ 
         { "domain": "shop", "type": "order_available"}
@@ -47,15 +48,15 @@ ruleset Shop {
     //   // not sure if we want this or just need Shop_status ruleset
     // }
     
-    generateOrder = function( storeId, timestamp ) {
-      order_id = storeId + ":" + order_count().as("String");
+    generateOrder = function( shop_host, timestamp ) {
+      order_id = meta:picoId + ":" + order_count().as("String");
       order = {
-        "OrderId": order_id,
-        "ShopId": storeId,
-        "Timestamp": timestamp,
-        "Status" : "ready",
-        "DriverId" : "",
-        "Direction" : ""
+        "order_id": order_id,
+        "shop_host": shop_host,
+        "timestamp": timestamp,
+        "status" : "ready",
+        "driver_id" : "",
+        "destination" : ""
       };
       order
     }
@@ -124,14 +125,14 @@ ruleset Shop {
       subs = Subscriptions:established("Tx_role", "driver").klog("Subs: ")
       randNum = random:integer(subs.length()-1).klog("RAND NUM: ")
       driver = subs[randNum].klog("DRIVER: ")
-      order = generateOrder(meta:picoId, time:now());
+      order = generateOrder(meta:host, time:now());
     }
     event:send(
           { "eci": driver{"Tx"}, "eid": "order_available",
             "domain": "driver", "type": "order_available",
             "attrs": { "order": order, "Rx": driver{"Rx"}  }})
     always{
-      ent:orders := orders().put([order{"OrderId"}], order);
+      ent:orders := orders().put([order{"order_id"}], order);
       ent:order_num := order_count() + 1
     }
   }

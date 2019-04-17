@@ -1,11 +1,7 @@
 ruleset Driver {
   meta {
     use module io.picolabs.subscription alias subscriptions
-    use module io.picolabs.keys alias google
-<<<<<<< HEAD
-
-=======
->>>>>>> f216a070631f0aff31bc834833cd71c27a94c73b
+    use module io.picolabs.keys
     shares __testing, getOrders, getPeers, getSeen
   }
   global {
@@ -16,7 +12,7 @@ ruleset Driver {
         { "name": "getSeen" }
       //, { "name": "entry", "args": [ "key" ] }
       ] , "events":
-      [ //{ "domain": "d1", "type": "t1" }
+      [ { "domain": "driver", "type": "new_peer", "attrs": [ "eci", "driver_name", "host" ] }
       //, { "domain": "d2", "type": "t2", "attrs": [ "a1", "a2" ] }
       ]
     }
@@ -54,7 +50,7 @@ ruleset Driver {
     getPeer = function() {
       available_peers = getPeers().filter(function(peer_value,peer_id) {
         adjusted_orders = getOrders().filter(function(origin_group, shop_id) {
-          order_id = ent:peers{[peer_id.klog("PeerId: "),"orders",shop_id.klog("StoreID: ")]}.klog("order_id");
+          order_id = ent:peers{[peer_id.klog("PeerId: "),"orders",shop_id.klog("StoreID: ")]}.defaultsTo(-1).klog("order_id");
           
           origin_group.keys().any(function(x) {x > order_id}).klog("origin_groups");
         });
@@ -88,17 +84,13 @@ ruleset Driver {
       rand_index = random:integer(0,length(available_groups.keys()) - 1).klog("rand_index");
       group_index = available_groups.keys()[rand_index].klog("group_index");
       
-      order_index = peer{["orders", group_index]};
-      order_index = order_index => (math:int(order_index) + 1).as("String") | "1";
+      order_index = driver{["orders", group_index]}.klog("peer_last_seen");
+      order_index = order_index != null => (math:int(order_index) + 1).as("String") | "0";
       
       {
-        "OrderId": group_index + ":" + order_index,
-        "Order": ent:orders{[group_index, order_index.klog("OrderId")]}.klog("returns")
+        "order_id": group_index + ":" + order_index,
+        "order": ent:orders{[group_index, order_index.klog("order_id")]}.klog("returns")
       }
-    }
-
-    get_random_order = function() {
-      
     }
   }
 
@@ -106,22 +98,22 @@ ruleset Driver {
     select when driver order_available
     pre {
       order = event:attr("order");
-      shop_id = order{"ShopId"};
-      order_status = order{"Status"};
-      timestamp = order{"Timestamp"}
+      shop_host = order{"shop_host"};
+      order_status = order{"status"};
+      timestamp = order{"timestamp"}
       order_group = getOrders(){shop_id}.defaultsTo({})
-      order_id = order{"OrderId"}
+      ids = order{"order_id"}
+      id_array = ids.split(re#:#)
+      shop_id = id_array[0]
+      order_num = math:int(id_array[1])
     }
     if order then
       send_directive("Order Available")
     fired {
-      ent:orders{shop_id} := order_group.put(order_id, {
-        "Status" : order_status,
-        "Timestamp" : timestamp
-      });
-      ent:seen_orders{shop_id} := order_id.split(re#:#)[1];
-      raise driver event "gossip_heartbeat"
-        attributes event:attrs
+      ent:orders{shop_id} := order_group.put(order_num, order);
+      ent:seen_orders{shop_id} := order_num;
+      // raise driver event "gossip_heartbeat"
+      //   attributes event:attrs
     }
   }
   
@@ -152,7 +144,7 @@ ruleset Driver {
       send_directive("Scheduled Heartbeat!")
       
     fired {
-      //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
+      schedule driver event "gossip_heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
   }
     
@@ -160,45 +152,44 @@ ruleset Driver {
     select when driver send_order where ent:status.defaultsTo(true)
     pre {
       current_peer = getPeer()
-      peer_entity = ent:peers{current_peer{"id"}.klog("DriverId")}.defaultsTo({})  // TODO: Art ask Mike about "id" and how it's set.
       order = getOrder(current_peer).klog("Order")
       driver_subscription = subscriptions:established("Tx_role", "driver").filter(function(x) {
         x{"Tx"}.klog("tx") == current_peer{"id"}.klog("peerId")
       })[0].klog("subscription")
     }
-    
-    every{
-      send_directive("driver", driver_subscription);
-      event:send({
-        "eci": driver_subscription{"Tx"},
-        "eid": "none",
-        "domain": "driver",
-        "type": "handle_order",
-        "attrs": order
-      });
-    }
+    if driver_subscription then
+      every {
+        send_directive("driver", driver_subscription);
+        event:send({
+          "eci": driver_subscription{"Tx"},
+          "eid": "none",
+          "domain": "driver",
+          "type": "handle_order",
+          "attrs": order
+        });
+      }
   }
   
   rule handle_order_gossip {
     select when driver handle_order where ent:status.defaultsTo(true)
     
     pre {
-      order_id = event:attr("OrderId")
+      ids = event:attr("order_id")
       id_array = ids.split(re#:#)
       shop_id = id_array[0]
       order_num = math:int(id_array[1])
-      order = event:attr("Order")
+      order = event:attr("order")
 
-      origin_group = getOrders().get(origin_id).defaultsTo({})
+      origin_group = getOrders().get(shop_id).defaultsTo({})
       updated_orders = origin_group.put(order_num, order)
     }
     
-    if origin_group != {} && order_num - 1 != math:int(ent:seen{shop_id}) then
+    if origin_group != {} && order_num - 1 != math:int(ent:seen_orders{shop_id}) then
       send_directive("Not adding Order", {"ids": ids})
  
     notfired {
       ent:orders := getOrders().set(shop_id, updated_orders);
-      ent:seen{shop_id} := order_num;
+      ent:seen_orders{shop_id} := order_num;
     }
   }
   
@@ -208,14 +199,15 @@ ruleset Driver {
       driver_subscription = getAnyPeer().klog("getAnyPeer Driver: ")
       my_seen = getSeen().klog("Seen: ")
     }
-    every {
-      event:send( { 
-        "eci": driver_subscription{"Tx"}, 
-        "eid": "send-seen-order",
-        "domain": "driver", 
-        "type": "handle_seen_orders",
-        "attrs": my_seen } )
-    }
+    if driver_subscription then
+      every {
+        event:send( { 
+          "eci": driver_subscription{"Tx"}, 
+          "eid": "send-seen-order",
+          "domain": "driver", 
+          "type": "handle_seen_orders",
+          "attrs": my_seen } )
+      }
   }
   
   rule handle_seen_gossip {
@@ -232,12 +224,26 @@ ruleset Driver {
       ent:peers{[gossiper_name, "orders"]} := new_seen
     }
   }
+  
+  rule order_status_update {
+    select when driver status_update
+    pre {
+      order = "something"
+      order_id = order["order_id"]
+      shop_id = order["ship_id"] // from order
+      status = getOrderStatus()
+    }
+    event:send(
+          { "eci": shop_id, "eid": "status_update",
+            "domain": "shop", "type": "status_update",
+            "attrs": { "driver_id": meta:picoId, "order_id": order_id,"status": status }})
+  }
 
   rule ready_for_delivery {
-    select when driver gossip_heartbeat where length(ent:requested.keys()) == 0
+    select when gossip heartbeat where length(ent:requested.keys()) == 5
 
     pre {
-      order = get_random_order()
+      // order = get_random_order()
       ids = event:attr("id")
       id_array = ids.split(re#:#)
       shop_id = id_array[0]
@@ -323,25 +329,11 @@ ruleset Driver {
     }
   }
 
-  rule order_status_update {
-    select when driver status_update
-    pre {
-      order = "something"
-      order_id = order["order_id"]
-      shop_id = order["shop_id"] // from order
-      status = getOrderStatus()
-    }
-    event:send(
-          { "eci": shop_id, "eid": "status_update",
-            "domain": "shop", "type": "status_update",
-            "attrs": { "driver_id": meta:picoId, "order_id": order_id,"status": status }})
-  }
-
   rule send_update {
     select when driver status_updated
 
     pre {
-      new_status = ent:order_status.defaultsTo("picking up flowers")
+      new_status = ent:status.defaultsTo("picking up flowers")
       order_id = event:attr("order_id")
       store_subscription = subscriptions:established("Tx_role", "store").filter(function(x) {
         x{"Tx"}.klog("tx") == current_store{"id"}.klog("storeId")
@@ -357,18 +349,11 @@ ruleset Driver {
           "eid": "none",
           "domain": "gossip",
           "type": "seen",
-          "attrs": {
-            "driver_id": meta:picoId,
-            "order_id": order_id,
-            "status": new_status
-          }
+          "attrs": my_seen
         });
       }
 
-    fired {
-      ent:order_status := new_status
-    }
-    else {
+    notfired {
       schedule driver event "status_updated" at time:add(time:now(), {"seconds": "5"})
         attributes {
           "status": new_status
@@ -381,7 +366,7 @@ ruleset Driver {
 
     pre {
       peer_id = event:attr("eci")
-      peer_name = event:attr("sensor_name")
+      peer_name = event:attr("driver_name")
       host = event:attr("host")
     }
 
@@ -420,174 +405,6 @@ ruleset Driver {
         "id": new_id,
         "orders": {}
       });
-    }
-  }
-
-  rule driver_did_something {
-    select when driver changed
-    
-    pre {
-      new_status = event:attr("status")
-    }
-
-    send_directive(new_status)
-
-    always {
-      ent:order_status := new_status
-    }
-  }
-
-  rule location_changed {
-    select when driver location_changed
-
-    pre {
-      location = event:attr("location")
-    }
-
-    send_directive("changing location")
-
-    always {
-      ent:location := location
-    }
-  }
-
-  rule driver_did_something {
-    select when driver changed
-    
-    pre {
-      new_status = event:attr("status")
-    }
-
-    send_directive(new_status)
-
-    always {
-      ent:order_status := new_status
-    }
-  }
-
-  rule location_changed {
-    select when driver location_changed
-
-    pre {
-      location = event:attr("location")
-    }
-
-    send_directive("changing location")
-
-    always {
-      ent:location := location
-    }
-  }
-
-  rule driver_did_something {
-    select when driver changed
-    
-    pre {
-      new_status = event:attr("status")
-    }
-
-    send_directive(new_status)
-
-    always {
-      ent:order_status := new_status
-    }
-  }
-
-  rule location_changed {
-    select when driver location_changed
-
-    pre {
-      location = event:attr("location")
-    }
-
-    send_directive("changing location")
-
-    always {
-      ent:location := location
-    }
-  }
-
-  rule driver_did_something {
-    select when driver changed
-    
-    pre {
-      new_status = event:attr("status")
-    }
-
-    send_directive(new_status)
-
-    always {
-      ent:order_status := new_status
-    }
-  }
-
-  rule location_changed {
-    select when driver location_changed
-
-    pre {
-      location = event:attr("location")
-    }
-
-    send_directive("changing location")
-
-    always {
-      ent:location := location
-    }
-  }
-
-  rule driver_did_something {
-    select when driver changed
-    
-    pre {
-      new_status = event:attr("status")
-    }
-
-    send_directive(new_status)
-
-    always {
-      ent:order_status := new_status
-    }
-  }
-
-  rule location_changed {
-    select when driver location_changed
-
-    pre {
-      location = event:attr("location")
-    }
-
-    send_directive("changing location")
-
-    always {
-      ent:location := location
-    }
-  }
-
-  rule driver_did_something {
-    select when driver changed
-    
-    pre {
-      new_status = event:attr("status")
-    }
-
-    send_directive(new_status)
-
-    always {
-      ent:order_status := new_status
-    }
-  }
-
-  rule location_changed {
-    select when driver location_changed
-
-    pre {
-      location = event:attr("location")
-    }
-
-    send_directive("changing location")
-
-    always {
-      ent:location := location
     }
   }
 
