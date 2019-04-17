@@ -12,7 +12,8 @@ ruleset Driver {
         { "name": "getSeen" }
       //, { "name": "entry", "args": [ "key" ] }
       ] , "events":
-      [ { "domain": "driver", "type": "new_peer", "attrs": [ "eci", "driver_name", "host" ] }
+      [ { "domain": "driver", "type": "new_peer", "attrs": [ "eci", "driver_name", "host" ] },
+        { "domain": "order", "type": "status_changed", "attrs": [ "status" ] }
       //, { "domain": "d2", "type": "t2", "attrs": [ "a1", "a2" ] }
       ]
     }
@@ -101,16 +102,19 @@ ruleset Driver {
       shop_host = order{"shop_host"};
       order_status = order{"status"};
       timestamp = order{"timestamp"}
-      order_group = getOrders(){shop_id}.defaultsTo({})
       ids = order{"order_id"}
       id_array = ids.split(re#:#)
       shop_id = id_array[0]
       order_num = math:int(id_array[1])
+
+      order_group = getOrders(){shop_id}.defaultsTo({}).put(order_num, order)
     }
+
     if order then
       send_directive("Order Available")
+    
     fired {
-      ent:orders{shop_id} := order_group.put(order_num, order);
+      ent:orders{shop_id} := order_group;
       ent:seen_orders{shop_id} := order_num;
       // raise driver event "gossip_heartbeat"
       //   attributes event:attrs
@@ -236,33 +240,35 @@ ruleset Driver {
     event:send(
           { "eci": shop_id, "eid": "status_update",
             "domain": "shop", "type": "status_update",
-            "attrs": { "driver_id": meta:picoId, "order_id": order_id,"status": status }})
+            "attrs": { "driver_id": meta:eci, "order_id": order_id,"status": status }})
   }
 
   rule ready_for_delivery {
-    select when driver handle_order where ent:requested_order != null
+    select when driver handle_order where ent:requested_order.defaultsTo(null) == null
 
     pre {
       order = event:attr("order")
       ids = event:attr("order_id")
       id_array = ids.split(re#:#)
-      shop_id = id_array[0]
+      shop_id = id_array[0].klog("SHOP ID")
       order_id = id_array[1]
       shop_host = order{"shop_host"}
     }
 
+    event:send({
+      "eci": shop_id,
+      "eid": "delivery",
+      "domain": "shop",
+      "type": "delivery_requested",
+      "attrs": { 
+        "driver_id": meta:eci,
+        "order_id": ids,
+        "driver_rank": 5
+        }
+    });
+    
     fired {
-      ent:requested_order := order;
-      event:send({
-        "eci": shop_id,
-        "eid": "delivery",
-        "domain": "shop",
-        "type": "delivery_requested",
-        "attrs": { 
-          "driver_id": meta:picoId,
-          "order_id": order_id
-          }
-      }, shop_host);
+      ent:requested_order := order
     }
   }
 
@@ -281,14 +287,15 @@ ruleset Driver {
 
     pre {
       delivery = event:attr("order")
-      id = delivery{"id"}
+      delivery{"status"} = "driver assigned"
+      id = delivery{"order_id"}
     }
 
     send_directive("new delivery")
 
     fired {
       ent:requested_order := null;
-      ent:deliveries := ent:deliveries.defaultsTo({}).put(id, delivery);
+      ent:current_order := delivery;
       raise driver event "delivery_created" attributes event:attrs;
     }
   }
@@ -326,15 +333,14 @@ ruleset Driver {
     }
   }
 
-  rule send_update {
+  rule update_status {
     select when driver status_updated
 
     pre {
-      new_status = ent:status.defaultsTo("picking up flowers")
-      order_id = event:attr("order_id")
-      store_subscription = subscriptions:established("Tx_role", "store").filter(function(x) {
-        x{"Tx"}.klog("tx") == current_store{"id"}.klog("storeId")
-      })[0].klog("subscription")
+      new_status = ent:current_order{"status"}
+      order_id = ent:current_order{"order_id"}
+      id_array = order_id.split(re#:#)
+      shop_id = id_array[0]
       completed = new_status == "completed"
     }
 
@@ -342,20 +348,46 @@ ruleset Driver {
       every {
         send_directive("delivery complete!");
         event:send({
-          "eci": store_subscription{"Tx"},
+          "eci": shop_id,
           "eid": "none",
-          "domain": "gossip",
-          "type": "seen",
-          "attrs": my_seen
+          "domain": "shop",
+          "type": "status_updated",
+          "attrs": {
+            "driver_id": meta:eci,
+            "order_id": order_id,
+            "status": new_status
+          }
         });
       }
 
     notfired {
+      raise driver event "send_update" attributes {
+        "driver_id": meta:eci,
+        "shop_id": shop_id,
+        "order_id": order_id,
+        "status": new_status
+      };
       schedule driver event "status_updated" at time:add(time:now(), {"seconds": "5"})
         attributes {
           "status": new_status
         };
     }
+  }
+
+  rule send_update {
+    select when driver send_update
+
+    pre {
+      shop_id = event:attr("shop_id")
+    }
+
+    event:send({
+        "eci": shop_id,
+        "eid": "none",
+        "domain": "shop",
+        "type": "status_updated",
+        "attrs": event:attrs
+      });
   }
 
   rule new_peer {
@@ -402,6 +434,20 @@ ruleset Driver {
         "id": new_id,
         "orders": {}
       });
+    }
+  }
+
+  rule order_status_changed {
+    select when order status_changed
+
+    pre {
+      new_status = event:attr("status")
+    }
+
+    send_directive("update status")
+
+    always {
+      ent:current_order{"status"} := new_status
     }
   }
 
