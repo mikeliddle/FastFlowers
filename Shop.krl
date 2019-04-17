@@ -2,6 +2,7 @@ ruleset Shop {
   meta {
     use module io.picolabs.wrangler alias wrangler
     use module io.picolabs.subscription alias Subscriptions
+    use module io.picolabs.twilio_v2 alias twilio
     shares __testing, orders
   }
   global {
@@ -15,6 +16,9 @@ ruleset Shop {
         //{ "domain": "mischief", "type": "hat_lifted"} 
       ] }
     
+    SMS_number = "3852509880"
+    online_number = "17867888910"
+
     rank_threshold = 2
     auto_assign = true
     // location
@@ -37,7 +41,7 @@ ruleset Shop {
     }
     
     getOrder = function(id) {
-      ent:orders.get(id)
+      orders(){id.klog("order_id")}
     }
     
     // collect = function(driver) {
@@ -49,7 +53,7 @@ ruleset Shop {
     // }
     
     generateOrder = function( shop_host, timestamp ) {
-      order_id = meta:picoId + ":" + order_count().as("String");
+      order_id = meta:eci + ":" + order_count().as("String");
       order = {
         "order_id": order_id,
         "shop_host": shop_host,
@@ -66,56 +70,74 @@ ruleset Shop {
     select when shop delivery_requested
     pre {
       order_id = event:attr("order_id")
-      driver_id = event:attr("driver_id")
-      store_id = meta:picoId;
-      current_time = time:now();
-      
-    // TODO: generateOrder || getOrder
-      order = generateOrder(store_id, current_time);
-      // order = getOrder(order_id)
-      updated_attrs = event:attrs.put(["order"],order)
+      order = getOrder(order_id).klog("order")
     }
-    // if ent:auto_select then
-    //   event:send({
-    //     "eid": "none",
-    //     "domain": "shop",
-    //     "type": "driver_decision",
-    //     "attrs": {
-    //       "driver_id": driver_id
-    //     }
-    //   })
+
+    if order{"status"} == "ready" then
+      send_directive("order still available.")
       
-    always {
-      ent:order_num := order_count() + 1;
-      ent:orders := orders().put([order{"order_id"}], order);
-      raise shop event "driver_decision"
-        attributes updated_attrs;
+    fired {
+      // check request & approve/reject
+      raise shop event "driver_decision" attributes event:attrs 
     }
-    // fired {
-    //   // check request & approve/reject
-    //   raise driver event ""
-    //     attributes { "driver_id": driver_id } 
-    // }
   }
   
   rule delivery_check {
     select when shop driver_decision
     pre {
-      order = event:attr("order")
+      order_id = event:attr("order_id")
+      order = getOrder(order_id)
+      driver_id = event:attr("driver_id")
+      driver_rank = event:attr("driver_rank")
+    }
+    
+    if driver_rank < ent:rank_threshold then
+      event:send(
+          { "eci": driver_id, 
+            "eid": "rejected",
+            "domain": "driver", 
+            "type": "rejected",
+            "attrs": { }})
+     
+    notfired {
+      raise shop event "driver_eligible" attributes event:attrs
+    }
+  }
+  
+  rule collect_driver {
+    select when shop driver_eligible where ent:auto_assign.defaultsTo(true) == false
+    
+    pre { 
+      order_id = event:attr("order_id")
+      order = getOrder(order_id)
+      driver_id = event:attr("driver_id")
+      order_group = ent:waiting_orders{order_id}.defaultsTo({}).put(driver_id, driver_id)
+    }
+    
+    send_directive("adding driver to order collection")
+    
+    fired {
+      ent:waiting_orders := ent:waiting_orders.defaultsTo({}).set(order_id, order_group)
+    }
+  }
+  
+  rule auto_assign_driver {
+    select when shop driver_eligible where ent:auto_assign.defaultsTo(true)
+    
+    pre { 
+      order_id = event:attr("order_id")
+      order = getOrder(order_id)
       driver_id = event:attr("driver_id")
     }
-    // TODO: for approve/reject 
-    fired {
-      event:send(
-          { "eci": driver_id, "eid": "approved",
-            "domain": "driver", "type": "approved",
-            "attrs": {  }})
-    } else {
-      event:send(
-          { "eci": driver_id, "eid": "rejected",
-            "domain": "driver", "type": "rejected",
-            "attrs": {   }})
-    }
+    
+    event:send(
+          { "eci": driver_id, 
+            "eid": "approved",
+            "domain": "driver", 
+            "type": "approved",
+            "attrs": { 
+              "order": order
+            }})
   }
   
   rule order_available {
@@ -140,14 +162,23 @@ ruleset Shop {
   rule status_updated {
     // send customer update info
     select when shop status_updated
+
     pre {
       driver_id = event:attr("driver_id")
       order_id = event:attr("order_id")
       status = event:attr("status")
+
+      to = SMS_number
+      from = online_number
+      message = <<SHOP: Order #{order_ID}, update: #{status}>>
     }
-    // update order: pick_up, enroute, completed
-    
-    // if status = "completed" then
-    //   sendSMS & remove from order
+
+    if status == "completed" then
+      twilio:send_sms(to, from, message);
+
+    always {
+      ent:orders{[order_id, "status"]} := status
+    }
+
   }
 }
