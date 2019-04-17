@@ -2,11 +2,14 @@ ruleset Driver {
   meta {
     use module io.picolabs.subscription alias subscriptions
     use module io.picolabs.keys
-    shares __testing, orders
+    shares __testing, getOrders, getPeers, getSeen
   }
   global {
     __testing = { "queries":
-      [ { "name": "__testing" }
+      [ { "name": "__testing" },
+        { "name": "getOrders" },
+        { "name": "getPeers" },
+        { "name": "getSeen" }
       //, { "name": "entry", "args": [ "key" ] }
       ] , "events":
       [ //{ "domain": "d1", "type": "t1" }
@@ -46,8 +49,8 @@ ruleset Driver {
     
     getPeer = function() {
       available_peers = getPeers().filter(function(peer_value,peer_id) {
-        adjusted_orders = getOrders().filter(function(origin_group, store_id) {
-          order_id = ent:peers{[peer_id,"orders",store_id]}.klog("order_id");
+        adjusted_orders = getOrders().filter(function(origin_group, shop_id) {
+          order_id = ent:peers{[peer_id.klog("PeerId: "),"orders",shop_id.klog("StoreID: ")]}.klog("order_id");
           
           origin_group.keys().any(function(x) {x > order_id}).klog("origin_groups");
         });
@@ -64,16 +67,16 @@ ruleset Driver {
     }
 
     getAnyPeer = function() {
-      peer_count = length(subscriptions:established("Tx_role", "driver")) - 1;
+      peer_count = length(subscriptions:established("Tx_role", "driver").defaultsTo([]).klog("SUBS: ")).klog("PEERS: ") - 1;
       rand_index = random:integer(peer_count).klog("peer_index");
       subscriptions:established("Tx_role", "driver").klog("drivers")[rand_index].klog("driver");
     }
 
     getOrder = function(driver) {
-      available_groups = getOrders().klog("orders").filter(function(origin_group, store_id) {
-        current_order_id = driver{["orders", store_id]}.defaultsTo(false);
+      available_groups = getOrders().klog("orders").filter(function(origin_group, shop_id) {
+        current_order_id = driver{["orders", shop_id]}.defaultsTo(false);
         orders = origin_group.keys().klog("order_keys");
-        last_order = orders[length(orders) - 1];
+        last_order = orders[length(orders) - 1].klog("last_order");
       
         test = current_order_id => (current_order_id < last_order) | true;
         test
@@ -99,21 +102,53 @@ ruleset Driver {
     select when driver order_available
     pre {
       order = event:attr("order");
-      store_id = order{"StoreId"};
+      shop_id = order{"ShopId"};
       order_status = order{"Status"};
       timestamp = order{"Timestamp"}
-      order_group = getOrders(){store_id}.defaultsTo({})
+      order_group = getOrders(){shop_id}.defaultsTo({})
       order_id = order{"OrderId"}
     }
     if order then
       send_directive("Order Available")
     fired {
-      ent:orders{store_id} := order_group.put(order_id, {
+      ent:orders{shop_id} := order_group.put(order_id, {
         "Status" : order_status,
         "Timestamp" : timestamp
       });
-      ent:seen_orders{store_id} := order_id;
+      ent:seen_orders{shop_id} := order_id.split(re#:#)[1];
       raise driver event "gossip_heartbeat"
+        attributes event:attrs
+    }
+  }
+  
+  rule gossip {
+    select when driver gossip_heartbeat
+    
+    pre {
+      order = random:integer(0,1) == 1
+    }
+
+    if order then
+      send_directive("Sending Gossip")
+
+    fired {
+      raise driver event "send_order"
+        attributes event:attrs
+    }
+    else {
+      raise driver event "send_seen_orders"
+        attributes event:attrs
+    }
+  }
+
+  rule schedule_gossip {
+    select when system online or wrangler ruleset_added or driver gossip_heartbeat
+
+    if ent:status.defaultsTo(true) then
+      send_directive("Scheduled Heartbeat!")
+      
+    fired {
+      //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
   }
     
@@ -121,17 +156,17 @@ ruleset Driver {
     select when driver send_order where ent:status.defaultsTo(true)
     pre {
       current_peer = getPeer()
-      peer_entity = ent:peers{current_peer{"id"}}.defaultsTo({})  // TODO: Art ask Mike about "id" and how it's set.
-      order = getOrder(current_peer)
-      peer_subscription = subscriptions:established("Tx_role", "peer").filter(function(x) {
+      peer_entity = ent:peers{current_peer{"id"}.klog("DriverId")}.defaultsTo({})  // TODO: Art ask Mike about "id" and how it's set.
+      order = getOrder(current_peer).klog("Order")
+      driver_subscription = subscriptions:established("Tx_role", "driver").filter(function(x) {
         x{"Tx"}.klog("tx") == current_peer{"id"}.klog("peerId")
       })[0].klog("subscription")
     }
     
     every{
-      send_directive("peer", peer_subscription);
+      send_directive("driver", driver_subscription);
       event:send({
-        "eci": peer_subscription{"Tx"},
+        "eci": driver_subscription{"Tx"},
         "eid": "none",
         "domain": "driver",
         "type": "handle_order",
@@ -146,7 +181,7 @@ ruleset Driver {
     pre {
       order_id = event:attr("OrderId")
       id_array = ids.split(re#:#)
-      store_id = id_array[0]
+      shop_id = id_array[0]
       order_num = math:int(id_array[1])
       order = event:attr("Order")
 
@@ -154,24 +189,24 @@ ruleset Driver {
       updated_orders = origin_group.put(order_num, order)
     }
     
-    if origin_group != {} && order_num - 1 != math:int(ent:seen{store_id}) then
+    if origin_group != {} && order_num - 1 != math:int(ent:seen{shop_id}) then
       send_directive("Not adding Order", {"ids": ids})
  
     notfired {
-      ent:orders := getOrders().set(store_id, updated_orders);
-      ent:seen{store_id} := order_num;
+      ent:orders := getOrders().set(shop_id, updated_orders);
+      ent:seen{shop_id} := order_num;
     }
   }
   
   rule send_seen_gossip {
     select when driver send_seen_orders where ent:status.defaultsTo(true)
     pre {
-      peer_subscription = getAnyPeer()
-      my_seen = getSeen()
+      driver_subscription = getAnyPeer().klog("getAnyPeer Driver: ")
+      my_seen = getSeen().klog("Seen: ")
     }
     every {
       event:send( { 
-        "eci": peer_subscription{"Tx"}, 
+        "eci": driver_subscription{"Tx"}, 
         "eid": "send-seen-order",
         "domain": "driver", 
         "type": "handle_seen_orders",
@@ -190,7 +225,7 @@ ruleset Driver {
     send_directive("received seen", new_seen);
     
     always {
-      ent:peers{[their_name, "orders"]} := new_seen
+      ent:peers{[gossiper_name, "orders"]} := new_seen
     }
   }
   
@@ -339,7 +374,7 @@ ruleset Driver {
       host = event:attr("host")
     }
 
-    send_directive("received a new peer!")
+    send_directive("received a new driver!")
 
     always {
       ent:peers := ent:peers.defaultsTo({}).put(peer_id, {
@@ -349,8 +384,8 @@ ruleset Driver {
 
       raise wrangler event "subscription" attributes {
         "name": peer_id,
-        "Rx_role": "peer",
-        "Tx_role": "peer",
+        "Rx_role": "driver",
+        "Tx_role": "driver",
         "Tx_host": host,
         "channel_type": "subscription",
         "wellKnown_Tx": peer_id
@@ -359,7 +394,7 @@ ruleset Driver {
   }
 
   rule update_peer {
-    select when wrangler subscription_added
+    select when wrangler subscription_added where event:attr("Tx_role") == "driver"
 
     pre {
       peer_id = event:attr("name").klog("name")
@@ -374,35 +409,6 @@ ruleset Driver {
         "id": new_id,
         "orders": {}
       });
-    }
-  }
-  
-  rule gossip {
-    select when driver gossip_heartbeat
-    
-    pre {
-      order = random:integer(0,1) == 1
-    }
-
-    if order then
-      send_directive("Sending Gossip")
-
-    fired {
-      raise driver event "send_order"
-    }
-    else {
-      raise driver event "send_seen_orders"
-    }
-  }
-
-  rule schedule_gossip {
-    select when system online or wrangler ruleset_added or driver gossip_heartbeat
-
-    if ent:status.defaultsTo(true) then
-      send_directive("Scheduled Heartbeat!")
-      
-    fired {
-      //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
   }
 
