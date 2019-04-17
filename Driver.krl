@@ -47,7 +47,7 @@ ruleset Driver {
     getPeer = function() {
       available_peers = getPeers().filter(function(peer_value,peer_id) {
         adjusted_orders = getOrders().filter(function(origin_group, store_id) {
-          order_id = ent:peers{[peer_id,"orders",store_id]}.klog("order_id");
+          order_id = ent:peers{[peer_id.klog("PeerId: "),"orders",store_id.klog("StoreID: ")]}.klog("order_id");
           
           origin_group.keys().any(function(x) {x > order_id}).klog("origin_groups");
         });
@@ -64,7 +64,7 @@ ruleset Driver {
     }
 
     getAnyPeer = function() {
-      peer_count = length(subscriptions:established("Tx_role", "driver")) - 1;
+      peer_count = length(subscriptions:established("Tx_role", "driver").defaultsTo([]).klog("SUBS: ")) - 1;
       rand_index = random:integer(peer_count).klog("peer_index");
       subscriptions:established("Tx_role", "driver").klog("drivers")[rand_index].klog("driver");
     }
@@ -114,6 +114,38 @@ ruleset Driver {
       });
       ent:seen_orders{store_id} := order_id;
       raise driver event "gossip_heartbeat"
+        attributes event:attrs
+    }
+  }
+  
+  rule gossip {
+    select when driver gossip_heartbeat
+    
+    pre {
+      order = random:integer(0,1) == 1
+    }
+
+    if order then
+      send_directive("Sending Gossip")
+
+    fired {
+      raise driver event "send_order"
+        attributes event:attrs
+    }
+    else {
+      raise driver event "send_seen_orders"
+        attributes event:attrs
+    }
+  }
+
+  rule schedule_gossip {
+    select when system online or wrangler ruleset_added or driver gossip_heartbeat
+
+    if ent:status.defaultsTo(true) then
+      send_directive("Scheduled Heartbeat!")
+      
+    fired {
+      //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
   }
     
@@ -166,8 +198,8 @@ ruleset Driver {
   rule send_seen_gossip {
     select when driver send_seen_orders where ent:status.defaultsTo(true)
     pre {
-      peer_subscription = getAnyPeer()
-      my_seen = getSeen()
+      peer_subscription = getAnyPeer().klog("Peer: ")
+      my_seen = getSeen().klog("Seen: ")
     }
     every {
       event:send( { 
@@ -339,7 +371,7 @@ ruleset Driver {
       host = event:attr("host")
     }
 
-    send_directive("received a new peer!")
+    send_directive("received a new driver!")
 
     always {
       ent:peers := ent:peers.defaultsTo({}).put(peer_id, {
@@ -349,8 +381,8 @@ ruleset Driver {
 
       raise wrangler event "subscription" attributes {
         "name": peer_id,
-        "Rx_role": "peer",
-        "Tx_role": "peer",
+        "Rx_role": "driver",
+        "Tx_role": "driver",
         "Tx_host": host,
         "channel_type": "subscription",
         "wellKnown_Tx": peer_id
@@ -359,7 +391,7 @@ ruleset Driver {
   }
 
   rule update_peer {
-    select when wrangler subscription_added
+    select when wrangler subscription_added where event:attr("Tx_role") == "driver"
 
     pre {
       peer_id = event:attr("name").klog("name")
@@ -374,35 +406,6 @@ ruleset Driver {
         "id": new_id,
         "orders": {}
       });
-    }
-  }
-  
-  rule gossip {
-    select when driver gossip_heartbeat
-    
-    pre {
-      order = random:integer(0,1) == 1
-    }
-
-    if order then
-      send_directive("Sending Gossip")
-
-    fired {
-      raise driver event "send_order"
-    }
-    else {
-      raise driver event "send_seen_orders"
-    }
-  }
-
-  rule schedule_gossip {
-    select when system online or wrangler ruleset_added or driver gossip_heartbeat
-
-    if ent:status.defaultsTo(true) then
-      send_directive("Scheduled Heartbeat!")
-      
-    fired {
-      //schedule gossip event "heartbeat" at time:add(time:now(), {"seconds": ent:gossip_interval.defaultsTo("5")})
     }
   }
 
