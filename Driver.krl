@@ -240,42 +240,39 @@ ruleset Driver {
   }
 
   rule ready_for_delivery {
-    select when gossip heartbeat where length(ent:requested.keys()) == 5
+    select when driver handle_order where ent:requested_order != null
 
     pre {
-      // order = get_random_order()
-      ids = event:attr("id")
+      order = event:attr("order")
+      ids = event:attr("order_id")
       id_array = ids.split(re#:#)
       shop_id = id_array[0]
       order_id = id_array[1]
-      order = event:attr("order")
       shop_host = order{"shop_host"}
     }
 
     fired {
-      ent:requested := ent:requested.defaultsTo({}).put(ids, order);
-      raise wrangler event "subscription" attributes {
-        "name": shop_id,
-        "Rx_role": "driver",
-        "Tx_role": "shop",
-        "Tx_host": shop_host,
-        "channel_type": "subscription",
-        "wellKnown_Tx": shop_id
-      };
+      ent:requested_order := order;
+      event:send({
+        "eci": shop_id,
+        "eid": "delivery",
+        "domain": "shop",
+        "type": "delivery_requested",
+        "attrs": { 
+          "driver_id": meta:picoId,
+          "order_id": order_id
+          }
+      }, shop_host);
     }
   }
 
   rule release_request {
     select when driver rejected
 
-    pre {
-      order_id = event:attr("order_id")
-    }
-
     send_directive("releasing request")
 
     fired {
-      ent:requested := ent:requested.delete(order_id)
+      ent:requested_order := null
     }
   }
 
@@ -285,12 +282,12 @@ ruleset Driver {
     pre {
       delivery = event:attr("order")
       id = delivery{"id"}
-      
     }
 
     send_directive("new delivery")
 
     fired {
+      ent:requested_order := null;
       ent:deliveries := ent:deliveries.defaultsTo({}).put(id, delivery);
       raise driver event "delivery_created" attributes event:attrs;
     }
