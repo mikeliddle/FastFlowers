@@ -2,7 +2,10 @@ ruleset Driver {
   meta {
     use module io.picolabs.subscription alias subscriptions
     use module io.picolabs.keys alias google
+<<<<<<< HEAD
 
+=======
+>>>>>>> f216a070631f0aff31bc834833cd71c27a94c73b
     shares __testing, getOrders, getPeers, getSeen
   }
   global {
@@ -226,11 +229,7 @@ ruleset Driver {
     send_directive("received seen", new_seen);
     
     always {
-<<<<<<< HEAD
       ent:peers{[gossiper_name, "orders"]} := new_seen
-=======
-      ent:peers{[their_name, "orders"]} := new_seen
->>>>>>> added helper rules
     }
   }
 
